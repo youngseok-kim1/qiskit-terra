@@ -45,7 +45,7 @@ import numpy as np
 from qiskit.circuit.parameterexpression import ParameterExpression
 from qiskit.pulse.exceptions import PulseError
 from qiskit.pulse.library import continuous
-from qiskit.pulse.library.discrete import gaussian, gaussian_square, drag, constant
+from qiskit.pulse.library.discrete import gaussian, gaussian_square, drag, constant, gaussian_square_drag, gaussian_square_echo
 from qiskit.pulse.library.pulse import Pulse
 from qiskit.pulse.library.waveform import Waveform
 
@@ -373,6 +373,7 @@ class GaussianSquareDrag(ParametricPulse):
             amp: The amplitude of the Gaussian and of the square pulse.
             sigma: A measure of how wide or narrow the Gaussian risefall is; see the class
                    docstring for more details.
+            beta: The correction amplitude.
             width: The duration of the embedded square pulse.
             risefall_sigma_ratio: The ratio of each risefall duration to sigma.
             name: Display name for this pulse envelope.
@@ -416,7 +417,7 @@ class GaussianSquareDrag(ParametricPulse):
 
     def get_waveform(self) -> Waveform:
         return gaussian_square_drag(
-            duration=self.duration, amp=self.amp, width=self.width, sigma=self.sigma, zero_ends=True
+            duration=self.duration, amp=self.amp, width=self.width, sigma=self.sigma, beta=self.beta, zero_ends=True
         )
 
     def validate_parameters(self) -> None:
@@ -499,18 +500,202 @@ class GaussianSquareDrag(ParametricPulse):
             "duration": self.duration,
             "amp": self.amp,
             "sigma": self.sigma,
+            "beta": self.beta,
             "width": self.width,
         }
 
     def __repr__(self) -> str:
-        return "{}(duration={}, amp={}, sigma={}, width={}{})".format(
+        return "{}(duration={}, amp={}, beta={}, sigma={}, width={}{})".format(
             self.__class__.__name__,
             self.duration,
             self.amp,
+            self.beta,
             self.sigma,
             self.width,
             f", name='{self.name}'" if self.name is not None else "",
         )
+
+class GaussianSquareEcho(ParametricPulse):
+    """A square pulse with a Gaussian Square shaped risefall with additional echoed Gaussian square shape pulse. 
+    gaussian_square_echo has two separate amp/angle;
+      - active cancellation tone: full width gaussian_square, which has amp/angle
+      - echo tone: half width (width//2) echoed gaussian square, which has amp/angle
+    This sequence is for direct CX pulse described in Fig. 7 of https://arxiv.org/abs/2008.08571
+     Either risefall_sigma_ratio or width parameter has to be specified.
+    If risefall_sigma_ratio is not None and width is None:
+    :math:`risefall = risefall` _ :math:`to` _ :math:`sigma * sigma`
+    :math:`width = duration - 2 * risefall`
+    If width is not None and risefall_sigma_ratio is None:
+    .. math::
+        risefall = (duration - width) / 2
+    In both cases, the pulse is defined as:
+    .. math::
+        0 <= x < risefall
+        f(x) = amp * exp( -(1/2) * (x - risefall)^2 / sigma^2 )
+        risefall <= x < risefall + width
+        f(x) = amp
+        risefall + width <= x < duration
+        f(x) = amp * exp( -(1/2) * (x - (risefall + width))^2 / sigma^2 )
+    """
+
+    def __init__(
+        self,
+        duration: Union[int, ParameterExpression],
+        active_amp: Union[float, ParameterExpression],
+        active_angle: Union[float, ParameterExpression],
+        echo_amp: Union[float, ParameterExpression],
+        echo_angle: Union[float, ParameterExpression],
+        sigma: Union[float, ParameterExpression],
+        width: Union[float, ParameterExpression] = None,
+        risefall_sigma_ratio: Union[float, ParameterExpression] = None,
+        name: Optional[str] = None,
+        limit_amplitude: Optional[bool] = None,
+    ):
+        """Initialize the gaussian square pulse.
+        Args:
+            duration: Pulse length in terms of the the sampling period `dt`.
+            active_amp: The amplitude of the Gaussian and of the square pulse (active cancellation tone). 
+                        Note that amp is float not complex.
+            active_angle: The angle of the Gaussian and of the square pulse (active cancellation tone).
+            echo_amp: The amplitude of the Gaussian and of the square pulse (echo tone). 
+                      Note that amp is float not complex.
+            echo_angle: The angle of the Gaussian and of the square pulse (echo tone).
+            sigma: A measure of how wide or narrow the Gaussian risefall is; see the class
+                   docstring for more details.
+            width: The duration of the embedded square pulse.
+            risefall_sigma_ratio: The ratio of each risefall duration to sigma.
+            name: Display name for this pulse envelope.
+            limit_amplitude: If ``True``, then limit the amplitude of the
+                             waveform to 1. The default is ``True`` and the
+                             amplitude is constrained to 1.
+        """
+        self._active_amp = active_amp
+        self._active_angle = active_angle
+        self._echo_amp = echo_amp
+        self._echo_angle = echo_angle
+        self._sigma = sigma
+        self._risefall_sigma_ratio = risefall_sigma_ratio
+        self._width = width
+        super().__init__(duration=duration, name=name, limit_amplitude=limit_amplitude)
+
+    @property
+    def active_amp(self) -> Union[float, ParameterExpression]:
+        """The Gaussian amplitude."""
+        return self._active_amp
+
+    @property
+    def active_angle(self) -> Union[float, ParameterExpression]:
+        """The Gaussian amplitude."""
+        return self._active_angle
+    
+    @property
+    def echo_amp(self) -> Union[float, ParameterExpression]:
+        """The Gaussian amplitude."""
+        return self._echo_amp
+
+    @property
+    def echo_angle(self) -> Union[float, ParameterExpression]:
+        """The Gaussian amplitude."""
+        return self._echo_angle
+
+    @property
+    def sigma(self) -> Union[float, ParameterExpression]:
+        """The Gaussian standard deviation of the pulse width."""
+        return self._sigma
+
+    @property
+    def risefall_sigma_ratio(self) -> Union[float, ParameterExpression]:
+        """The duration of each risefall in terms of sigma."""
+        return self._risefall_sigma_ratio
+
+    @property
+    def width(self) -> Union[float, ParameterExpression]:
+        """The width of the square portion of the pulse."""
+        return self._width
+
+    def get_waveform(self) -> Waveform:
+        return gaussian_square_echo(
+            duration=self.duration, 
+            active_amp=self.active_amp, active_angle=self.active_angle,
+            echo_amp=self.echo_amp, echo_angle=self.echo_angle,
+            width=self.width, sigma=self.sigma, zero_ends=True
+        )
+
+    def validate_parameters(self) -> None:
+        if not _is_parameterized(self.active_amp) and abs(self.active_amp) > 1.0 and self.limit_amplitude:
+            raise PulseError(
+                f"The active cancellation tone amplitude norm must be <= 1, found: {abs(self.active_amp)}"
+                + "This can be overruled by setting Pulse.limit_amplitude."
+            )
+        if not _is_parameterized(self.echo_amp) and abs(self.echo_amp) > 1.0 and self.limit_amplitude:
+            raise PulseError(
+                f"The echo tone amplitude norm must be <= 1, found: {abs(self.echo_amp)}"
+                + "This can be overruled by setting Pulse.limit_amplitude."
+            )
+        if not _is_parameterized(self.active_amp) and isinstance(self.active_amp, complex):
+            raise PulseError("active tone amp must be real.")
+        if not _is_parameterized(self.echo_amp) and isinstance(self.echo_amp, complex):
+            raise PulseError("echo tone amp must be real.")
+        if not _is_parameterized(self.sigma) and self.sigma <= 0:
+            raise PulseError("Sigma must be greater than 0.")
+        if self.width is not None and self.risefall_sigma_ratio is not None:
+            raise PulseError(
+                "Either the pulse width or the risefall_sigma_ratio parameter can be specified"
+                " but not both."
+            )
+        if self.width is None and self.risefall_sigma_ratio is None:
+            raise PulseError(
+                "Either the pulse width or the risefall_sigma_ratio parameter must be specified."
+            )
+        if self.width is not None:
+            if not _is_parameterized(self.width) and self.width < 0:
+                raise PulseError("The pulse width must be at least 0.")
+            if (
+                not (_is_parameterized(self.width) or _is_parameterized(self.duration))
+                and self.width >= self.duration
+            ):
+                raise PulseError("The pulse width must be less than its duration.")
+            self._risefall_sigma_ratio = (self.duration - self.width) / (2.0 * self.sigma)
+
+        else:
+            if not _is_parameterized(self.risefall_sigma_ratio) and self.risefall_sigma_ratio <= 0:
+                raise PulseError("The parameter risefall_sigma_ratio must be greater than 0.")
+            if not (
+                _is_parameterized(self.risefall_sigma_ratio)
+                or _is_parameterized(self.duration)
+                or _is_parameterized(self.sigma)
+            ) and self.risefall_sigma_ratio >= self.duration / (2.0 * self.sigma):
+                raise PulseError(
+                    "The parameter risefall_sigma_ratio must be less than duration/("
+                    "2*sigma)={}.".format(self.duration / (2.0 * self.sigma))
+                )
+            self._width = self.duration - 2.0 * self.risefall_sigma_ratio * self.sigma
+
+    @property
+    def parameters(self) -> Dict[str, Any]:
+        return {
+            "duration": self.duration,
+            "active_amp": self.active_amp,
+            "active_angle": self.active_angle,
+            "echo_amp": self.echo_amp,
+            "echo_angle": self.echo_angle,
+            "sigma": self.sigma,
+            "width": self.width,
+        }
+
+    def __repr__(self) -> str:
+        return "{}(duration={}, active_amp={}, active_angle={}, echo_amp={}, echo_angle={}, sigma={}, width={}{})".format(
+            self.__class__.__name__,
+            self.duration,
+            self.active_amp,
+            self.active_angle,
+            self.echo_amp,
+            self.echo_angle,
+            self.sigma,
+            self.width,
+            f", name='{self.name}'" if self.name is not None else "",
+        )
+
 
 class Drag(ParametricPulse):
     """The Derivative Removal by Adiabatic Gate (DRAG) pulse is a standard Gaussian pulse

@@ -535,6 +535,7 @@ def gaussian_square_drag(
         duration: Duration of pulse. Must be greater than zero.
         amp: Pulse amplitude.
         sigma: Width (standard deviation) of Gaussian rise/fall portion of the pulse.
+        beta: The correction amplitude.
         risefall: Number of samples over which pulse rise and fall happen. Width of
             square portion of pulse will be ``duration-2*risefall``.
         width: The duration of the embedded square pulse. Only one of ``width`` or ``risefall``
@@ -545,11 +546,12 @@ def gaussian_square_drag(
     Raises:
         PulseError: If ``risefall`` and ``width`` arguments are inconsistent or not enough info.
     """
+    import numpy as np
     if risefall is None and width is None:
         raise PulseError("gaussian_square missing required argument: 'width' or 'risefall'.")
     if risefall is not None:
         if width is None:
-            width = duration - 2 * risefall
+            width = int(duration - 2 * risefall)
         elif 2 * risefall + width != duration:
             raise PulseError(
                 "Both width and risefall were specified, and they are "
@@ -561,7 +563,7 @@ def gaussian_square_drag(
     gaussian_square_ = _sampled_gaussian_square_pulse(
         duration, amp, center, width, sigma, zeroed_width=zeroed_width, name=name
     )._samples
-    drag_duration = duration-width
+    drag_duration = int(duration-width)
     drag_center = drag_duration / 2
     drag_zeroed_width = drag_duration + 2 if zero_ends else None
     func_ = _sampled_gaussian_deriv_pulse(drag_duration, amp, drag_center, sigma, name=name)._samples
@@ -573,3 +575,82 @@ def gaussian_square_drag(
             (pulserise_, np.zeros(int(duration) - 2*cen), - pulserise_[::-1])
         )
     ) 
+
+def gaussian_square_echo(
+    duration: int,
+    active_amp: float,
+    active_angle: float,
+    echo_amp: float,
+    echo_angle: float,
+    sigma: float,
+    risefall: Optional[float] = None,
+    width: Optional[float] = None,
+    name: Optional[str] = None,
+    zero_ends: bool = True,
+) -> Waveform:
+    r"""Generates gaussian square :class:`~qiskit.pulse.library.Waveform`.
+    For :math:`d=` ``duration``, :math:`A=` ``amp``, :math:`\sigma=` ``sigma``,
+    and :math:`r=` ``risefall``, applies the ``midpoint`` sampling strategy to
+    generate a discrete pulse sampled from the continuous function:
+    .. math::
+        f(x) = \begin{cases}
+                    g(x - r) ) & x\leq r \\
+                    A & r\leq x\leq d-r \\
+                    g(x - (d - r)) & d-r\leq x
+                \end{cases}
+    where :math:`g(x)` is the Gaussian function sampled from in :meth:`gaussian`
+    with :math:`A=` ``amp``, :math:`\mu=1`, and :math:`\sigma=` ``sigma``. I.e.
+    :math:`f(x)` represents a square pulse with smooth Gaussian edges.
+    If ``zero_ends == True``, the samples for the Gaussian ramps are remapped as in
+    :meth:`gaussian`.
+    Args:
+        duration: Duration of pulse. Must be greater than zero.
+        active_amp: The amplitude of the Gaussian and of the square pulse (active cancellation tone). 
+                    Note that amp is float not complex.
+        active_angle: The angle of the Gaussian and of the square pulse (active cancellation tone).
+        echo_amp: The amplitude of the Gaussian and of the square pulse (echo tone). 
+                  Note that amp is float not complex.
+        echo_angle: The angle of the Gaussian and of the square pulse (echo tone).
+        sigma: Width (standard deviation) of Gaussian rise/fall portion of the pulse.
+        risefall: Number of samples over which pulse rise and fall happen. Width of
+            square portion of pulse will be ``duration-2*risefall``.
+        width: The duration of the embedded square pulse. Only one of ``width`` or ``risefall``
+               should be specified as the functional form requires
+               ``width = duration - 2 * risefall``.
+        name: Name of pulse.
+        zero_ends: If True, zero ends at ``x = -1, x = duration + 1``, but rescale to preserve amp.
+    Raises:
+        PulseError: If ``risefall`` and ``width`` arguments are inconsistent or not enough info.
+    """
+    import numpy as np
+    if risefall is None and width is None:
+        raise PulseError("gaussian_square missing required argument: 'width' or 'risefall'.")
+    if risefall is not None:
+        if width is None:
+            width = duration - 2 * risefall
+            width_echo = duration // 2 - 2 * risefall
+        elif 2 * risefall + width != duration:
+            raise PulseError(
+                "Both width and risefall were specified, and they are "
+                "inconsistent: 2 * risefall + width == {} != "
+                "duration == {}.".format(2 * risefall + width, duration)
+            )
+    elif width is not None:
+        risefall = (duration - width)/2.0
+        width_echo = duration // 2 - 2 * risefall
+    center = duration / 2
+    zeroed_width = duration + 2 if zero_ends else None
+    gaussian_square_ = _sampled_gaussian_square_pulse(
+        duration, active_amp*np.exp(1j * active_angle), center, width, sigma, zeroed_width=zeroed_width, name=name
+    )._samples
+    duration_echo = int(duration // 2)
+    zeroed_width = duration_echo + 2 if zero_ends else None
+    center = duration_echo / 2
+    pulsep_ = _sampled_gaussian_square_pulse(
+        duration_echo, echo_amp*np.exp(1j * echo_angle), center, width_echo, sigma, zeroed_width=zeroed_width, name=name
+    )._samples
+    pulsem_ = -pulsep_
+    return Waveform(
+        gaussian_square_ + 
+        np.concatenate((pulsep_, np.zeros(duration % 2), pulsem_))
+    )
